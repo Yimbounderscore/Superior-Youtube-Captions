@@ -2,20 +2,20 @@
 (function () {
     'use strict';
 
-    console.log('[BetterYTSubs] INJECTED SCRIPT KICKING OFF...');
+    console.log('[BetterYTSubs] injected script starting...');
 
     // turn word-by-word junk into nice lines
     function transformSubtitles(data) {
         // if empty, bail
         if (!data || !data.events) return data;
 
-        console.log('[BetterYTSubs] FIXING', data.events.length, 'EVENTS');
+        console.log('[BetterYTSubs] processing', data.events.length, 'events');
 
         const newEvents = [];
         let currentLine = { text: '', startTime: 0, endTime: 0 };
 
         for (const event of data.events) {
-            // ignore stuff that isn't text
+            // ignore stuff that isn't text (like window style events)
             if (!event.segs) {
                 newEvents.push(event);
                 continue;
@@ -30,6 +30,7 @@
                 if (seg.utf8) eventText += seg.utf8;
             }
             eventText = eventText.trim();
+
             // if it's empty after trimming, skip it
             if (!eventText) continue;
 
@@ -61,6 +62,7 @@
             }
         }
 
+        // don't forget the stragglers at the end
         if (currentLine.text.trim()) {
             newEvents.push({
                 tStartMs: currentLine.startTime,
@@ -82,7 +84,7 @@
 
         // swap the events array
         data.events = newEvents;
-        console.log('[BetterYTSubs] DONE. MADE', newEvents.length, 'LINES');
+        console.log('[BetterYTSubs] done. created', newEvents.length, 'lines');
         return data;
     }
 
@@ -91,37 +93,48 @@
     window.fetch = async function (...args) {
         const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
 
-        // catch subtitle requests
+        // is this a subtitle request?
         if (url && url.includes('timedtext')) {
-            console.log('[BetterYTSubs] CAUGHT A FETCH REQUEST');
-
-            // let it happen, but grab the result
-            const response = await originalFetch.apply(this, args);
+            console.log('[BetterYTSubs] intercepted fetch:', url.substring(0, 100));
 
             try {
-                // parse it
-                const data = await response.json();
-                // fix it
-                const transformed = transformSubtitles(data);
+                // let the original request happen
+                const response = await originalFetch.apply(this, args);
 
-                // send back our fixed version, tricking youtube
-                return new Response(JSON.stringify(transformed), {
-                    status: response.status,
-                    statusText: response.statusText,
-                    headers: response.headers
-                });
-            } catch (e) {
-                console.error('[BetterYTSubs] OOPS, TRANSFORMATION FAILED:', e);
-                // if we break it, just return the original so we don't crash the player
-                return originalFetch.apply(this, args);
+                // clone the response so we can read it without consuming it
+                const clonedResponse = response.clone();
+
+                try {
+                    // try to parse as json
+                    const data = await clonedResponse.json();
+
+                    // fix it
+                    const transformed = transformSubtitles(data);
+
+                    // send back our fixed version
+                    return new Response(JSON.stringify(transformed), {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: response.headers
+                    });
+                } catch (parseError) {
+                    // if json parsing fails, return the original response
+                    console.warn('[BetterYTSubs] could not parse response as json:', parseError);
+                    return response;
+                }
+            } catch (fetchError) {
+                // if the fetch itself fails, just let it fail naturally
+                console.error('[BetterYTSubs] fetch failed:', fetchError);
+                throw fetchError;
             }
         }
 
-        // 
+        // not subtitles? just let it go
         return originalFetch.apply(this, args);
     };
 
-
+    // youtube sometimes uses xhr instead of fetch
+    // so we have to capture that too
     const originalXHROpen = XMLHttpRequest.prototype.open;
     const originalXHRSend = XMLHttpRequest.prototype.send;
     const xhrUrls = new WeakMap();
@@ -138,7 +151,7 @@
 
         // if it's subtitles...
         if (url && url.includes('timedtext')) {
-            console.log('[BetterYTSubs] CAUGHT AN XHR REQUEST');
+            console.log('[BetterYTSubs] intercepted xhr:', url.substring(0, 100));
 
             const xhr = this;
 
@@ -147,6 +160,7 @@
                 get: function () {
                     // get the real response
                     const original = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText').get.call(this);
+
                     // only mess with it when it's done loading
                     if (this.readyState === 4 && original) {
                         try {
@@ -169,5 +183,5 @@
         return originalXHRSend.apply(this, args);
     };
 
-    console.log('[BetterYTSubs] TRAPS SET. READY TO INTERCEPT.');
+    console.log('[BetterYTSubs] traps set. ready to intercept.');
 })();
