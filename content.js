@@ -22,6 +22,6 @@
         (document.head || document.documentElement).appendChild(script);
     }
 
-    // do it now
+
     injectScript();
 })();
