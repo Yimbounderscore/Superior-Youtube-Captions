@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Better YouTube Subtitles",
-  "version": "1.0",
+  "version": "1.2",
   "description": "Replaces YouTube's word-by-word auto-generated subtitles with standard line-by-line subtitles.",
   "permissions": [],
   "host_permissions": [
@@ -13,19 +13,10 @@
         "*://*.youtube.com/*"
       ],
       "js": [
-        "content.js"
-      ],
-      "run_at": "document_start"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
         "injected.js"
       ],
-      "matches": [
-        "*://*.youtube.com/*"
-      ]
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "browser_specific_settings": {

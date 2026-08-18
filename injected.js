@@ -43,12 +43,17 @@
                 currentLine.text += word;
                 currentLine.endTime = segStart + eventDuration;
 
-                // Flush line if it ends with sentence punctuation
-                if (currentLine.text.trim().match(/[.!?]$/)) {
+                // Flush line if it ends with sentence punctuation OR exceeds 15 words
+                const trimmedText = currentLine.text.trim();
+                const hasPunctuation = trimmedText.match(/[.!?]$/);
+                const wordCount = (trimmedText.match(/ /g) || []).length + 1;
+                const tooManyWords = wordCount >= 15;
+
+                if (hasPunctuation || tooManyWords) {
                     newEvents.push({
                         tStartMs: currentLine.startTime,
                         dDurationMs: currentLine.endTime - currentLine.startTime,
-                        segs: [{ utf8: currentLine.text.trim() }]
+                        segs: [{ utf8: trimmedText }]
                     });
                     currentLine = { text: '', startTime: 0, endTime: 0 };
                 }
@@ -80,13 +85,29 @@
         return data;
     }
 
+    function getJson3Url(input) {
+        const url = typeof input === 'string' || input instanceof URL
+            ? String(input)
+            : input?.url;
+
+        if (!url || !url.includes('/api/timedtext')) return null;
+
+        const json3Url = new URL(url, location.href);
+        json3Url.searchParams.set('fmt', 'json3');
+        return json3Url.href;
+    }
+
     // Intercept fetch API
     const originalFetch = window.fetch;
     window.fetch = async function (...args) {
-        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+        const url = getJson3Url(args[0]);
 
-        if (url && url.includes('timedtext')) {
+        if (url) {
             console.log('[BetterYTSubs] intercepted fetch:', url.substring(0, 100));
+
+            args[0] = args[0] instanceof Request
+                ? new Request(url, args[0])
+                : url;
 
             try {
                 const response = await originalFetch.apply(this, args);
@@ -95,11 +116,14 @@
                 try {
                     const data = await clonedResponse.json();
                     const transformed = transformSubtitles(data);
+                    const headers = new Headers(response.headers);
+                    headers.delete('content-length');
+                    headers.delete('content-encoding');
 
                     return new Response(JSON.stringify(transformed), {
                         status: response.status,
                         statusText: response.statusText,
-                        headers: response.headers
+                        headers
                     });
                 } catch (parseError) {
                     console.warn('[BetterYTSubs] JSON parse failed:', parseError);
@@ -117,36 +141,57 @@
     // Intercept XHR (fallback for some YT requests)
     const originalXHROpen = XMLHttpRequest.prototype.open;
     const originalXHRSend = XMLHttpRequest.prototype.send;
+    const originalXHRResponse = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'response').get;
+    const originalXHRResponseText = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText').get;
     const xhrUrls = new WeakMap();
 
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-        xhrUrls.set(this, url);
-        return originalXHROpen.apply(this, [method, url, ...rest]);
+        const json3Url = getJson3Url(url);
+        xhrUrls.set(this, json3Url);
+        return originalXHROpen.apply(this, [method, json3Url || url, ...rest]);
     };
 
     XMLHttpRequest.prototype.send = function (...args) {
         const url = xhrUrls.get(this);
 
-        if (url && url.includes('timedtext')) {
+        if (url) {
             console.log('[BetterYTSubs] intercepted xhr:', url.substring(0, 100));
 
             const xhr = this;
+            let transformedResponse;
+            let transformedResponseText;
 
-            // Override responseText getter for transformation
-            Object.defineProperty(xhr, 'responseText', {
-                get: function () {
-                    const original = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText').get.call(this);
+            function transformText(original) {
+                if (xhr.readyState !== 4 || !original) return original;
+                if (transformedResponseText !== undefined) return transformedResponseText;
 
-                    if (this.readyState === 4 && original) {
-                        try {
-                            const data = JSON.parse(original);
-                            const transformed = transformSubtitles(data);
-                            return JSON.stringify(transformed);
-                        } catch (e) {
-                            return original;
-                        }
+                try {
+                    transformedResponseText = JSON.stringify(transformSubtitles(JSON.parse(original)));
+                } catch (error) {
+                    transformedResponseText = original;
+                }
+                return transformedResponseText;
+            }
+
+            Object.defineProperties(xhr, {
+                responseText: {
+                    configurable: true,
+                    get: function () {
+                        return transformText(originalXHRResponseText.call(this));
                     }
-                    return original;
+                },
+                response: {
+                    configurable: true,
+                    get: function () {
+                        const original = originalXHRResponse.call(this);
+                        if (this.readyState !== 4 || !original) return original;
+                        if (typeof original === 'string') return transformText(original);
+                        if (this.responseType !== 'json') return original;
+                        if (transformedResponse === undefined) {
+                            transformedResponse = transformSubtitles(original);
+                        }
+                        return transformedResponse;
+                    }
                 }
             });
         }
